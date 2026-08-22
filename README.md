@@ -1,18 +1,45 @@
 # Investment Portfolio DataHub
 
-Minimal Vercel + FastAPI + AKShare proxy for the investment portfolio project.
+Vercel + FastAPI + AKShare proxy for the investment portfolio project.
 
-## MVP endpoint
+## Generic AKShare proxy
 
-The first test only supports ETF `512890` and does not write to Turso:
+The proxy supports AKShare data functions without adding one Vercel route per
+data source:
+
+```text
+GET  /api/akshare/{function_name}?param=value
+POST /api/akshare/{function_name}
+```
+
+Example:
+
+```http
+POST /api/akshare/fund_etf_hist_em
+Content-Type: application/json
+
+{
+  "symbol": "512890",
+  "period": "daily",
+  "start_date": "20260801",
+  "end_date": "20260822",
+  "adjust": ""
+}
+```
+
+The generic route resolves a callable from the `akshare` module, validates its
+Python signature, invokes it in a worker thread, and converts DataFrame,
+Series, date, NumPy, and nested values into JSON. It does not use `eval` and
+does not write to Turso.
+
+The original normalized ETF route remains available for compatibility:
 
 ```text
 GET /api/health
 GET /api/etf/512890?start_date=20260801&end_date=20260822
 ```
 
-The ETF endpoint calls `ak.fund_etf_hist_em` and returns the normalized fields
-required by the current Turso daily-K table:
+The ETF route returns the fields required by the current Turso daily-K table:
 
 ```json
 {
@@ -42,6 +69,10 @@ http://127.0.0.1:8000/health
 http://127.0.0.1:8000/etf/512890?start_date=20260801&end_date=20260822
 ```
 
-Vercel detects `api/index.py` as a Python function. This MVP intentionally has
-no authentication and no database write; those are added only after the proxy
-request path is confirmed.
+## Authentication
+
+Set the Vercel environment variable `DATAHUB_API_TOKEN` before production
+use. When it is present, the proxy accepts either
+`Authorization: Bearer <token>` or `x-datahub-token: <token>`. Supabase should
+store the same token as a secret and forward it on every request. Without the
+variable the MVP remains public for smoke testing.
