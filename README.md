@@ -59,6 +59,12 @@ The ETF route returns the fields required by the current Turso daily-K table:
 }
 ```
 
+For the normalized ETF route, AKShare Eastmoney volume is converted from lots
+to shares to match the existing Turso table. If Eastmoney is unavailable, the
+route falls back to AKShare `fund_etf_hist_sina`; Sina volume is already in
+shares, is rounded to the same 100-share precision, and its historical
+`amount` is used as `total_turnover`.
+
 ## Local test
 
 ```powershell

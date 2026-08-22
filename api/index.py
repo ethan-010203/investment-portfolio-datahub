@@ -20,6 +20,13 @@ from starlette.concurrency import run_in_threadpool
 
 
 SUPPORTED_ETFS = {"159985", "512890", "513100", "513500", "518880"}
+SINA_ETF_SYMBOLS = {
+    "159985": "sz159985",
+    "512890": "sh512890",
+    "513100": "sh513100",
+    "513500": "sh513500",
+    "518880": "sh518880",
+}
 FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 BLOCKED_FUNCTIONS = {"set_token", "set_proxy", "set_config", "clear_cache"}
 
@@ -234,17 +241,29 @@ async def call_akshare(function: Any, parameters: dict[str, Any]) -> Any:
     raise RuntimeError("AKShare call did not return")
 
 
-def normalize_rows(frame: Any) -> list[dict[str, Any]]:
-    required_columns = {
-        "日期",
-        "开盘",
-        "收盘",
-        "最高",
-        "最低",
-        "成交量",
-        "成交额",
+def normalize_rows(
+    frame: Any,
+    *,
+    volume_in_lots: bool,
+    volume_round_to: int = 1,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    aliases = {
+        "date": ("日期", "date"),
+        "open": ("开盘", "open"),
+        "close": ("收盘", "close"),
+        "high": ("最高", "high"),
+        "low": ("最低", "low"),
+        "volume": ("成交量", "volume"),
+        "total_turnover": ("成交额", "amount"),
     }
-    missing = required_columns.difference(frame.columns)
+    columns = set(frame.columns)
+    field_names = {
+        field: next((name for name in names if name in columns), None)
+        for field, names in aliases.items()
+    }
+    missing = {field for field, name in field_names.items() if name is None}
     if missing:
         raise HTTPException(
             status_code=502,
@@ -253,18 +272,73 @@ def normalize_rows(frame: Any) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for raw in frame.to_dict(orient="records"):
+        row_date = json_date(raw[field_names["date"]])
+        row_date_key = row_date.replace("-", "")
+        if start_date and row_date_key < start_date:
+            continue
+        if end_date and row_date_key > end_date:
+            continue
+        volume = json_number(raw[field_names["volume"]], "volume")
+        if volume is not None and volume_in_lots:
+            volume = int(round(volume * 100))
+        if volume is not None and volume_round_to > 1:
+            volume = int(round(volume / volume_round_to) * volume_round_to)
         rows.append(
             {
-                "date": json_date(raw["日期"]),
-                "open": json_number(raw["开盘"], "open"),
-                "high": json_number(raw["最高"], "high"),
-                "low": json_number(raw["最低"], "low"),
-                "close": json_number(raw["收盘"], "close"),
-                "volume": json_number(raw["成交量"], "volume"),
-                "total_turnover": json_number(raw["成交额"], "total_turnover"),
+                "date": row_date,
+                "open": json_number(raw[field_names["open"]], "open"),
+                "high": json_number(raw[field_names["high"]], "high"),
+                "low": json_number(raw[field_names["low"]], "low"),
+                "close": json_number(raw[field_names["close"]], "close"),
+                "volume": volume,
+                "total_turnover": json_number(
+                    raw[field_names["total_turnover"]], "total_turnover"
+                ),
             }
         )
     return rows
+
+
+async def fetch_normalized_etf(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    try:
+        frame = await call_akshare(
+            ak.fund_etf_hist_em,
+            {
+                "symbol": symbol,
+                "period": "daily",
+                "start_date": start_date,
+                "end_date": end_date,
+                "adjust": adjust,
+            },
+        )
+        return (
+            "akshare.fund_etf_hist_em",
+            normalize_rows(
+                frame,
+                volume_in_lots=True,
+                volume_round_to=100,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+        )
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        sina_symbol = SINA_ETF_SYMBOLS[symbol]
+        frame = await call_akshare(ak.fund_etf_hist_sina, {"symbol": sina_symbol})
+        return (
+            "akshare.fund_etf_hist_sina",
+            normalize_rows(
+                frame,
+                volume_in_lots=False,
+                volume_round_to=100,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+        )
 
 
 @app.get("/health", include_in_schema=True)
@@ -329,17 +403,12 @@ async def etf_daily(
         raise HTTPException(status_code=422, detail="start_date must be <= end_date")
 
     try:
-        frame = await call_akshare(
-            ak.fund_etf_hist_em,
-            {
-                "symbol": symbol,
-                "period": "daily",
-                "start_date": normalized_start,
-                "end_date": normalized_end,
-                "adjust": adjust,
-            },
+        source, rows = await fetch_normalized_etf(
+            symbol,
+            normalized_start,
+            normalized_end,
+            adjust,
         )
-        rows = normalize_rows(frame)
     except HTTPException:
         raise
     except Exception as exc:
@@ -351,7 +420,7 @@ async def etf_daily(
 
     return {
         "ok": True,
-        "source": "akshare.fund_etf_hist_em",
+        "source": source,
         "symbol": symbol,
         "start_date": normalized_start,
         "end_date": normalized_end,
