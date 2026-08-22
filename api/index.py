@@ -366,9 +366,9 @@ def fetch_eastmoney_etf(
             {
                 "date": row_date,
                 "open": json_number(fields[1], "open"),
-                "high": json_number(fields[2], "high"),
-                "low": json_number(fields[3], "low"),
-                "close": json_number(fields[4], "close"),
+                "high": json_number(fields[3], "high"),
+                "low": json_number(fields[4], "low"),
+                "close": json_number(fields[2], "close"),
                 "volume": volume,
                 "total_turnover": json_number(fields[6], "total_turnover"),
             }
