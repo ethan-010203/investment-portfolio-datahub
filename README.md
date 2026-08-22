@@ -41,14 +41,17 @@ raw TQ fields are otherwise preserved. The endpoint does not choose the
 main/sub-main contract or calculate any adjusted series.
 
 The separate TQSDK service owns the TQ login and uses the same request body and
-response contract. Configure these Vercel environment variables before
-calling the route:
+response contract. Configure the TQSDK service URL in Vercel:
 
 ```text
 TQSDK_UPSTREAM_URL
-TQSDK_UPSTREAM_TOKEN
-DATAHUB_API_TOKEN
 ```
+
+The shared 32-character token is defined once in `api/security.py`. Supabase
+must send it as either `Authorization: Bearer <token>` or
+`x-datahub-token: <token>` for both the AKShare and TQ routes. Vercel sends the
+same value to the TQSDK service as `x-tq-service-token`; the TQSDK service must
+validate that header with the same token.
 
 `TQ_MAX_DATA_LENGTH`, `TQ_MAX_SETTLEMENT_DAYS`, `TQ_RELAY_TIMEOUT_SECONDS`, and
 `TQ_RELAY_RETRY_ATTEMPTS` are optional safeguards. They default to 10,000
@@ -137,8 +140,6 @@ http://127.0.0.1:8000/etf/512890?start_date=20260801&end_date=20260822
 
 ## Authentication
 
-Set the Vercel environment variable `DATAHUB_API_TOKEN` before production
-use. When it is present, the proxy accepts either
-`Authorization: Bearer <token>` or `x-datahub-token: <token>`. Supabase should
-store the same token as a secret and forward it on every request. Without the
-variable the MVP remains public for smoke testing.
+The token is intentionally hardcoded in `api/security.py` for the current MVP.
+Supabase should store the same value as a secret and forward it on every
+request. Rotate the token by changing that one constant and redeploying Vercel.

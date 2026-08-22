@@ -8,7 +8,6 @@ import json
 from math import isfinite
 import os
 import re
-import secrets
 from typing import Any
 from typing import get_args, get_origin
 
@@ -24,6 +23,7 @@ from api.tq_proxy import (
     fetch_tq_raw,
     parse_tq_request,
 )
+from api.security import require_request_auth
 
 
 SUPPORTED_ETFS = {"159985", "512890", "513100", "513500", "518880"}
@@ -73,19 +73,6 @@ def normalize_date(value: str, field_name: str) -> str:
             detail=f"{field_name} must use YYYYMMDD or YYYY-MM-DD",
         ) from exc
     return parsed.strftime("%Y%m%d")
-
-
-def require_request_auth(request: Request) -> None:
-    expected = os.getenv("DATAHUB_API_TOKEN", "").strip()
-    if not expected:
-        return
-
-    supplied = request.headers.get("x-datahub-token", "").strip()
-    authorization = request.headers.get("authorization", "")
-    if not supplied and authorization.lower().startswith("bearer "):
-        supplied = authorization[7:].strip()
-    if not supplied or not secrets.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="Missing or invalid datahub token")
 
 
 def json_number(value: Any, field_name: str) -> float | int | None:

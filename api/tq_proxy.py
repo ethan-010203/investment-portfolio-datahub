@@ -9,6 +9,8 @@ import requests
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
+from api.security import SHARED_DATAHUB_TOKEN
+
 
 ALLOWED_DATASETS = frozenset(
     {"main_continuous", "main_mapping", "contract_info", "contract_bars", "settlements"}
@@ -121,9 +123,7 @@ def _relay_once(payload: dict[str, Any]) -> dict[str, Any]:
         raise TqConfigurationError("TQSDK_UPSTREAM_URL is not configured")
 
     headers = {"content-type": "application/json"}
-    upstream_token = os.getenv("TQSDK_UPSTREAM_TOKEN", "").strip()
-    if upstream_token:
-        headers["x-tq-service-token"] = upstream_token
+    headers["x-tq-service-token"] = SHARED_DATAHUB_TOKEN
 
     try:
         response = requests.post(
