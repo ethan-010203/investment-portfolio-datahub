@@ -26,14 +26,35 @@ from api.tq_proxy import (
 from api.security import require_request_auth
 
 
-SUPPORTED_ETFS = {"159985", "512890", "513100", "513500", "518880"}
+SUPPORTED_ETFS = {
+    "159985",
+    "512890",
+    "513100",
+    "513500",
+    "518880",
+    "511260",
+    "511220",
+}
 SINA_ETF_SYMBOLS = {
     "159985": "sz159985",
     "512890": "sh512890",
     "513100": "sh513100",
     "513500": "sh513500",
     "518880": "sh518880",
+    "511260": "sh511260",
+    "511220": "sh511220",
 }
+EASTMONEY_BOND_RATES_URL = "https://datacenter.eastmoney.com/api/data/get"
+EASTMONEY_BOND_RATES_TOKEN = "894050c76af8597a853f5b408b759f5d"
+EASTMONEY_BOND_RATE_FIELDS = {
+    "date": "SOLAR_DATE",
+    "cn2": "EMM00588704",
+    "cn5": "EMM00166462",
+    "cn10": "EMM00166466",
+    "cn30": "EMM00166469",
+}
+EASTMONEY_ETF_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+EASTMONEY_ETF_MARKETS = {"511260": 1, "511220": 1}
 FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 BLOCKED_FUNCTIONS = {"set_token", "set_proxy", "set_config", "clear_cache"}
 
@@ -293,12 +314,88 @@ def normalize_rows(
     return rows
 
 
+def fetch_eastmoney_etf(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str,
+) -> list[dict[str, Any]]:
+    adjust_codes = {"": "0", "qfq": "1", "hfq": "2"}
+    if adjust not in adjust_codes:
+        raise HTTPException(status_code=422, detail="adjust must be one of: , qfq, hfq")
+    response = requests.get(
+        EASTMONEY_ETF_KLINE_URL,
+        params={
+            "secid": f"{EASTMONEY_ETF_MARKETS[symbol]}.{symbol}",
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57",
+            "ut": "7eea3edcaed734bea9cbfc24409ed989",
+            "klt": "101",
+            "fqt": adjust_codes[adjust],
+            "beg": start_date,
+            "end": end_date,
+        },
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Eastmoney returned invalid ETF JSON") from exc
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    klines = data.get("klines") if isinstance(data, Mapping) else None
+    if not klines:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for item in klines:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=502, detail="Eastmoney ETF K-line row is invalid")
+        fields = item.split(",")
+        if len(fields) < 7:
+            raise HTTPException(status_code=502, detail="Eastmoney ETF K-line fields are incomplete")
+        row_date = json_date(fields[0])
+        row_date_key = row_date.replace("-", "")
+        if row_date_key < start_date or row_date_key > end_date:
+            continue
+        volume = json_number(fields[5], "volume")
+        if volume is not None:
+            volume = int(round(volume * 100))
+        rows.append(
+            {
+                "date": row_date,
+                "open": json_number(fields[1], "open"),
+                "high": json_number(fields[2], "high"),
+                "low": json_number(fields[3], "low"),
+                "close": json_number(fields[4], "close"),
+                "volume": volume,
+                "total_turnover": json_number(fields[6], "total_turnover"),
+            }
+        )
+    return sorted(rows, key=lambda row: row["date"])
+
+
 async def fetch_normalized_etf(
     symbol: str,
     start_date: str,
     end_date: str,
     adjust: str,
 ) -> tuple[str, list[dict[str, Any]]]:
+    if symbol in EASTMONEY_ETF_MARKETS:
+        try:
+            return (
+                "eastmoney.stock_kline",
+                await run_in_threadpool(
+                    fetch_eastmoney_etf,
+                    symbol,
+                    start_date,
+                    end_date,
+                    adjust,
+                ),
+            )
+        except requests.exceptions.RequestException:
+            pass
     try:
         frame = await call_akshare(
             ak.fund_etf_hist_em,
@@ -333,6 +430,89 @@ async def fetch_normalized_etf(
                 end_date=end_date,
             ),
         )
+
+
+def fetch_eastmoney_china_yield_curve(
+    start_date: str,
+    end_date: str,
+) -> list[dict[str, Any]]:
+    """Fetch the minimum China treasury curve fields used by the strategy."""
+
+    start_api = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+    end_api = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+    params = {
+        "type": "RPTA_WEB_TREASURYYIELD",
+        "sty": "ALL",
+        "st": "SOLAR_DATE",
+        "sr": "-1",
+        "token": EASTMONEY_BOND_RATES_TOKEN,
+        "ps": 500,
+        "startDate": start_api,
+        "endDate": end_api,
+    }
+    max_pages = positive_env_int("EASTMONEY_BOND_MAX_PAGES", 100)
+    rows_by_date: dict[str, dict[str, Any]] = {}
+    total_pages: int | None = None
+
+    for page in range(1, max_pages + 1):
+        page_params = {**params, "p": page, "pageNo": page, "pageNum": page}
+        response = requests.get(
+            EASTMONEY_BOND_RATES_URL,
+            params=page_params,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="Eastmoney returned invalid JSON") from exc
+
+        result = payload.get("result") if isinstance(payload, Mapping) else None
+        if not isinstance(result, Mapping):
+            raise HTTPException(status_code=502, detail="Eastmoney returned no yield-curve result")
+        try:
+            response_pages = int(result["pages"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail="Eastmoney yield-curve pagination is invalid") from exc
+        if response_pages < 1 or (total_pages is not None and response_pages != total_pages):
+            raise HTTPException(status_code=502, detail="Eastmoney yield-curve pagination is invalid")
+        total_pages = response_pages
+        if total_pages > max_pages:
+            raise HTTPException(status_code=502, detail="Eastmoney yield-curve response is too large")
+
+        page_rows = result.get("data")
+        if not isinstance(page_rows, list) or not page_rows:
+            raise HTTPException(status_code=502, detail="Eastmoney yield-curve page is empty")
+
+        page_dates: list[str] = []
+        for raw in page_rows:
+            if not isinstance(raw, Mapping):
+                raise HTTPException(status_code=502, detail="Eastmoney yield-curve row is invalid")
+            row_date = json_date(raw.get(EASTMONEY_BOND_RATE_FIELDS["date"]))
+            try:
+                datetime.strptime(row_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail="Eastmoney yield-curve date is invalid") from exc
+            page_dates.append(row_date.replace("-", ""))
+            if start_date <= page_dates[-1] <= end_date:
+                normalized: dict[str, Any] = {"date": row_date}
+                for field in ("cn2", "cn5", "cn10", "cn30"):
+                    value = json_number(raw.get(EASTMONEY_BOND_RATE_FIELDS[field]), field)
+                    if value is None:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Eastmoney yield-curve field {field} is null",
+                        )
+                    normalized[field] = value / 100.0
+                rows_by_date[row_date] = normalized
+
+        if page >= total_pages or min(page_dates) <= start_date:
+            break
+    else:
+        raise HTTPException(status_code=502, detail="Eastmoney yield-curve pagination did not finish")
+
+    return [rows_by_date[key] for key in sorted(rows_by_date)]
 
 
 @app.get("/health", include_in_schema=True)
@@ -419,6 +599,48 @@ async def etf_daily(
         "start_date": normalized_start,
         "end_date": normalized_end,
         "adjust": adjust,
+        "count": len(rows),
+        "data": rows,
+    }
+
+
+@app.get("/bond/china-yield-curve", include_in_schema=True)
+@app.get("/api/bond/china-yield-curve", include_in_schema=False)
+async def china_yield_curve(
+    request: Request,
+    start_date: str = Query("20100101"),
+    end_date: str = Query("20500101"),
+) -> dict[str, Any]:
+    require_request_auth(request)
+    normalized_start = normalize_date(start_date, "start_date")
+    normalized_end = normalize_date(end_date, "end_date")
+    if normalized_start > normalized_end:
+        raise HTTPException(status_code=422, detail="start_date must be <= end_date")
+
+    try:
+        rows = await run_in_threadpool(
+            fetch_eastmoney_china_yield_curve,
+            normalized_start,
+            normalized_end,
+        )
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Eastmoney request failed: {type(exc).__name__}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Eastmoney request failed: {type(exc).__name__}",
+        ) from exc
+
+    return {
+        "ok": True,
+        "source": "eastmoney.RPTA_WEB_TREASURYYIELD",
+        "start_date": normalized_start,
+        "end_date": normalized_end,
         "count": len(rows),
         "data": rows,
     }

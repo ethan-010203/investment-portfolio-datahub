@@ -95,11 +95,40 @@ blocking the event loop. Connection errors and timeouts are retried with
 backoff. Tune `AKSHARE_CONCURRENCY` and `AKSHARE_RETRY_ATTEMPTS` in Vercel if
 the upstream provider changes its limits.
 
-The original normalized ETF route remains available for compatibility:
+The original normalized ETF route remains available for compatibility. It
+supports the five original ETFs plus the production domestic-bond ETFs
+`511260` (ten-year Treasury ETF) and `511220` (city-investment bond ETF):
+
+For `511260` and `511220`, the route first calls Eastmoney's stock K-line API
+directly and falls back to AKShare's Sina adapter only when the Eastmoney
+request cannot be completed.
 
 ```text
 GET /api/health
 GET /api/etf/512890?start_date=20260801&end_date=20260822
+```
+
+## China treasury yield curve
+
+The production domestic-bond factor uses the Eastmoney treasury yield curve
+endpoint:
+
+```text
+GET /api/bond/china-yield-curve?start_date=20260801&end_date=20260822
+```
+
+It returns only the fields used by the strategy. Eastmoney reports yields in
+percentage points; this route converts them to decimals, matching the local
+`china_bond_rates.csv` convention:
+
+```json
+{
+  "date": "2026-08-21",
+  "cn2": 0.012398,
+  "cn5": 0.013921,
+  "cn10": 0.016839,
+  "cn30": 0.02132
+}
 ```
 
 The ETF route returns the fields required by the current Turso daily-K table:
