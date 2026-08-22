@@ -1,137 +1,26 @@
 # Investment Portfolio DataHub
 
-Vercel + FastAPI proxy for the investment portfolio project. It exposes the
-existing AKShare routes and a raw TQSDK soybean-meal relay route. Vercel does
-not install or run TQSDK, select contracts, calculate M88/M888, splice prices,
-calculate roll yield, or run portfolio factors.
+Vercel + FastAPI transport service for data sources that Supabase Edge Functions
+cannot call directly. It relays source data only and does not calculate factors,
+select soybean-meal contracts, or produce portfolio weights.
 
-## Raw TQSDK soybean-meal data
+## Production routes
 
-The single TQ route receives the query from Supabase, forwards it to a
-separate Python service that runs TQSDK, and returns the upstream JSON without
-strategy calculations:
+All data routes require the shared token from `api/security.py` in either
+`x-datahub-token` or `Authorization: Bearer`.
 
-```text
-POST /api/tq/soymeal/raw
-```
-
-Request example:
-
-```json
-{
-  "start_date": "2026-08-01",
-  "end_date": "2026-08-21",
-  "data_length": 300,
-  "settlement_days": 300,
-  "datasets": [
-    "main_continuous",
-    "main_mapping",
-    "contract_info",
-    "contract_bars",
-    "settlements"
-  ]
-}
-```
-
-Supported datasets are `main_continuous`, `main_mapping`, `contract_info`,
-`contract_bars`, and `settlements`. The default is all five. `contract_bars`
-and `settlements` are returned grouped by concrete DCE soybean-meal symbol.
-Each returned row includes a normalized `trade_date` for Supabase alignment;
-raw TQ fields are otherwise preserved. The endpoint does not choose the
-main/sub-main contract or calculate any adjusted series.
-
-The separate TQSDK service owns the TQ login and uses the same request body and
-response contract. Configure the TQSDK service URL in Vercel:
+### ETF daily bars
 
 ```text
-TQSDK_UPSTREAM_URL
+GET /api/etf/{symbol}?start_date=20260801&end_date=20260821&adjust=
 ```
 
-The shared 32-character token is defined once in `api/security.py`. Supabase
-must send it as either `Authorization: Bearer <token>` or
-`x-datahub-token: <token>` for both the AKShare and TQ routes. Vercel sends the
-same value to the TQSDK service as `x-tq-service-token`; the TQSDK service must
-validate that header with the same token.
+The route supports `512890`, `513100`, `513500`, `518880`, and `159985`. It
+reads unadjusted daily OHLCV from TongdaXin through `pytdx`.
+Multiple TongdaXin servers provide transport redundancy; there is no fallback
+to another market-data source.
 
-`TQ_MAX_DATA_LENGTH`, `TQ_MAX_SETTLEMENT_DAYS`, `TQ_RELAY_TIMEOUT_SECONDS`, and
-`TQ_RELAY_RETRY_ATTEMPTS` are optional safeguards. They default to 10,000
-K-line rows, 2,000 settlement days, a 55-second upstream timeout, and 2 relay
-attempts. Supabase remains responsible for contract selection, M88/M888,
-roll-yield, and all strategy calculations.
-
-## Generic AKShare proxy
-
-The proxy supports AKShare data functions without adding one Vercel route per
-data source:
-
-```text
-GET  /api/akshare/{function_name}?param=value
-POST /api/akshare/{function_name}
-```
-
-Example:
-
-```http
-POST /api/akshare/fund_etf_hist_em
-Content-Type: application/json
-
-{
-  "symbol": "512890",
-  "period": "daily",
-  "start_date": "20260801",
-  "end_date": "20260822",
-  "adjust": ""
-}
-```
-
-The generic route resolves a callable from the `akshare` module, validates its
-Python signature, invokes it in a worker thread, and converts DataFrame,
-Series, date, NumPy, and nested values into JSON. It does not use `eval` and
-does not write to Turso.
-
-Synchronous AKShare calls are isolated from the FastAPI event loop. The proxy
-allows two upstream calls by default and queues additional requests without
-blocking the event loop. Connection errors and timeouts are retried with
-backoff. Tune `AKSHARE_CONCURRENCY` and `AKSHARE_RETRY_ATTEMPTS` in Vercel if
-the upstream provider changes its limits.
-
-The original normalized ETF route remains available for compatibility. It
-supports the five original ETFs plus the production domestic-bond ETFs
-`511260` (ten-year Treasury ETF) and `511220` (city-investment bond ETF):
-
-The route uses only AKShare `fund_etf_hist_em` (the Eastmoney ETF history
-endpoint). If Eastmoney is unavailable or returns incomplete fields, the route
-returns an error; it does not switch to another data source.
-
-```text
-GET /api/health
-GET /api/etf/512890?start_date=20260801&end_date=20260822
-```
-
-## China treasury yield curve
-
-The production domestic-bond factor uses the Eastmoney treasury yield curve
-endpoint:
-
-```text
-GET /api/bond/china-yield-curve?start_date=20260801&end_date=20260822
-```
-
-It returns only the fields used by the strategy. Eastmoney reports yields in
-percentage points; this route converts them to decimals, matching the local
-`china_bond_rates.csv` convention:
-
-```json
-{
-  "date": "2026-08-21",
-  "cn2": 0.012398,
-  "cn5": 0.013921,
-  "cn10": 0.016839,
-  "cn30": 0.02132
-}
-```
-
-The ETF route returns the fields required by the current Turso daily-K table:
+The response fields match the Turso daily-K tables:
 
 ```json
 {
@@ -140,13 +29,50 @@ The ETF route returns the fields required by the current Turso daily-K table:
   "high": 1.184,
   "low": 1.174,
   "close": 1.176,
-  "volume": 5137059,
-  "total_turnover": 604722662
+  "volume": 513705800,
+  "total_turnover": 604722688
 }
 ```
 
-For the normalized ETF route, AKShare Eastmoney volume is converted from lots
-to shares to match the existing Turso table.
+TongdaXin volume is reported in lots and converted to shares before returning.
+History is paged backward in blocks of 800 rows and filtered to the requested
+date range. Supabase requests all five ETFs as one batch so one TCP connection
+is reused for the complete update.
+
+### H30269 dividend yield
+
+```text
+GET /api/index/H30269/dividend-yield?start_date=20260801&end_date=20260821
+```
+
+This route downloads the official CSI Index indicator workbook directly. It
+returns only `date` and the free-float market-cap weighted dividend yield
+(`D/P2`) as a decimal.
+
+### USDA WASDE
+
+```text
+GET /api/usda/wasde?start_date=20260801&end_date=20260821
+```
+
+The route downloads official USDA ESMIS workbooks and normalizes only the
+soybean demand fields required by the strategy.
+
+### Raw TQSDK soybean-meal relay
+
+```text
+POST /api/tq/soymeal/raw
+```
+
+The request is forwarded to the Python TQSDK service configured by
+`TQSDK_UPSTREAM_URL`. The route does not choose main/sub-main contracts,
+calculate M88/M888, splice prices, or calculate roll yield.
+
+## Data fetched directly by Supabase
+
+`003376` accumulated NAV is fetched directly from Tencent Finance. The China
+10-year government-bond yield and credit curves are fetched directly from
+ChinaBond. They do not pass through this Vercel service.
 
 ## Local test
 
@@ -157,15 +83,4 @@ pip install -r requirements.txt
 uvicorn api.index:app --reload --port 8000
 ```
 
-Then open:
-
-```text
-http://127.0.0.1:8000/health
-http://127.0.0.1:8000/etf/512890?start_date=20260801&end_date=20260822
-```
-
-## Authentication
-
-The token is intentionally hardcoded in `api/security.py` for the current MVP.
-Supabase should store the same value as a secret and forward it on every
-request. Rotate the token by changing that one constant and redeploying Vercel.
+Then request `/api/health` or one of the authenticated production routes.
