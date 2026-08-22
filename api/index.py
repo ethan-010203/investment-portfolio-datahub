@@ -18,6 +18,13 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
+from api.tq_proxy import (
+    TqConfigurationError,
+    TqUpstreamError,
+    fetch_tq_raw,
+    parse_tq_request,
+)
+
 
 SUPPORTED_ETFS = {"159985", "512890", "513100", "513500", "518880"}
 SINA_ETF_SYMBOLS = {
@@ -428,3 +435,30 @@ async def etf_daily(
         "count": len(rows),
         "data": rows,
     }
+
+
+@app.post("/tq/soymeal/raw", include_in_schema=True)
+@app.post("/api/tq/soymeal/raw", include_in_schema=False)
+async def tq_soymeal_raw(request: Request) -> dict[str, Any]:
+    require_request_auth(request)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON") from exc
+
+    parameters = parse_tq_request(payload)
+    try:
+        data = await fetch_tq_raw(parameters)
+    except TqConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except TqUpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"TQ request failed: {type(exc).__name__}",
+        ) from exc
+
+    return data

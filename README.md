@@ -1,6 +1,60 @@
 # Investment Portfolio DataHub
 
-Vercel + FastAPI + AKShare proxy for the investment portfolio project.
+Vercel + FastAPI proxy for the investment portfolio project. It exposes the
+existing AKShare routes and a raw TQSDK soybean-meal relay route. Vercel does
+not install or run TQSDK, select contracts, calculate M88/M888, splice prices,
+calculate roll yield, or run portfolio factors.
+
+## Raw TQSDK soybean-meal data
+
+The single TQ route receives the query from Supabase, forwards it to a
+separate Python service that runs TQSDK, and returns the upstream JSON without
+strategy calculations:
+
+```text
+POST /api/tq/soymeal/raw
+```
+
+Request example:
+
+```json
+{
+  "start_date": "2026-08-01",
+  "end_date": "2026-08-21",
+  "data_length": 300,
+  "settlement_days": 300,
+  "datasets": [
+    "main_continuous",
+    "main_mapping",
+    "contract_info",
+    "contract_bars",
+    "settlements"
+  ]
+}
+```
+
+Supported datasets are `main_continuous`, `main_mapping`, `contract_info`,
+`contract_bars`, and `settlements`. The default is all five. `contract_bars`
+and `settlements` are returned grouped by concrete DCE soybean-meal symbol.
+Each returned row includes a normalized `trade_date` for Supabase alignment;
+raw TQ fields are otherwise preserved. The endpoint does not choose the
+main/sub-main contract or calculate any adjusted series.
+
+The separate TQSDK service owns the TQ login and uses the same request body and
+response contract. Configure these Vercel environment variables before
+calling the route:
+
+```text
+TQSDK_UPSTREAM_URL
+TQSDK_UPSTREAM_TOKEN
+DATAHUB_API_TOKEN
+```
+
+`TQ_MAX_DATA_LENGTH`, `TQ_MAX_SETTLEMENT_DAYS`, `TQ_RELAY_TIMEOUT_SECONDS`, and
+`TQ_RELAY_RETRY_ATTEMPTS` are optional safeguards. They default to 10,000
+K-line rows, 2,000 settlement days, a 55-second upstream timeout, and 2 relay
+attempts. Supabase remains responsible for contract selection, M88/M888,
+roll-yield, and all strategy calculations.
 
 ## Generic AKShare proxy
 
