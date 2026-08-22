@@ -32,6 +32,12 @@ Python signature, invokes it in a worker thread, and converts DataFrame,
 Series, date, NumPy, and nested values into JSON. It does not use `eval` and
 does not write to Turso.
 
+Synchronous AKShare calls are isolated from the FastAPI event loop. The proxy
+allows two upstream calls by default and queues additional requests without
+blocking the event loop. Connection errors and timeouts are retried with
+backoff. Tune `AKSHARE_CONCURRENCY` and `AKSHARE_RETRY_ATTEMPTS` in Vercel if
+the upstream provider changes its limits.
+
 The original normalized ETF route remains available for compatibility:
 
 ```text

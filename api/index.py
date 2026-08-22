@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import date, datetime
+import asyncio
 import inspect
 import json
 from math import isfinite
@@ -12,6 +13,7 @@ from typing import Any
 from typing import get_args, get_origin
 
 import akshare as ak
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
@@ -20,6 +22,19 @@ from starlette.concurrency import run_in_threadpool
 SUPPORTED_ETFS = {"159985", "512890", "513100", "513500", "518880"}
 FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 BLOCKED_FUNCTIONS = {"set_token", "set_proxy", "set_config", "clear_cache"}
+
+
+def positive_env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+UPSTREAM_CONCURRENCY = positive_env_int("AKSHARE_CONCURRENCY", 2)
+UPSTREAM_RETRY_ATTEMPTS = positive_env_int("AKSHARE_RETRY_ATTEMPTS", 3)
+UPSTREAM_SEMAPHORE = asyncio.Semaphore(UPSTREAM_CONCURRENCY)
 
 app = FastAPI(
     title="Investment Portfolio DataHub",
@@ -207,6 +222,18 @@ async def request_parameters(request: Request, function: Any) -> dict[str, Any]:
     return parameters
 
 
+async def call_akshare(function: Any, parameters: dict[str, Any]) -> Any:
+    async with UPSTREAM_SEMAPHORE:
+        for attempt in range(UPSTREAM_RETRY_ATTEMPTS):
+            try:
+                return await run_in_threadpool(function, **parameters)
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                if attempt + 1 >= UPSTREAM_RETRY_ATTEMPTS:
+                    raise
+                await asyncio.sleep(min(2.0, 0.35 * (2**attempt)))
+    raise RuntimeError("AKShare call did not return")
+
+
 def normalize_rows(frame: Any) -> list[dict[str, Any]]:
     required_columns = {
         "日期",
@@ -262,7 +289,7 @@ async def akshare_proxy(function_name: str, request: Request) -> dict[str, Any]:
     function = resolve_akshare_function(function_name)
     parameters = await request_parameters(request, function)
     try:
-        result = await run_in_threadpool(function, **parameters)
+        result = await call_akshare(function, parameters)
         data = jsonable(result)
     except HTTPException:
         raise
@@ -302,13 +329,15 @@ async def etf_daily(
         raise HTTPException(status_code=422, detail="start_date must be <= end_date")
 
     try:
-        frame = await run_in_threadpool(
+        frame = await call_akshare(
             ak.fund_etf_hist_em,
-            symbol=symbol,
-            period="daily",
-            start_date=normalized_start,
-            end_date=normalized_end,
-            adjust=adjust,
+            {
+                "symbol": symbol,
+                "period": "daily",
+                "start_date": normalized_start,
+                "end_date": normalized_end,
+                "adjust": adjust,
+            },
         )
         rows = normalize_rows(frame)
     except HTTPException:
