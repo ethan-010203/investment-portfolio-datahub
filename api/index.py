@@ -35,15 +35,6 @@ SUPPORTED_ETFS = {
     "511260",
     "511220",
 }
-SINA_ETF_SYMBOLS = {
-    "159985": "sz159985",
-    "512890": "sh512890",
-    "513100": "sh513100",
-    "513500": "sh513500",
-    "518880": "sh518880",
-    "511260": "sh511260",
-    "511220": "sh511220",
-}
 EASTMONEY_BOND_RATES_URL = "https://datacenter.eastmoney.com/api/data/get"
 EASTMONEY_BOND_RATES_TOKEN = "894050c76af8597a853f5b408b759f5d"
 EASTMONEY_BOND_RATE_FIELDS = {
@@ -53,8 +44,6 @@ EASTMONEY_BOND_RATE_FIELDS = {
     "cn10": "EMM00166466",
     "cn30": "EMM00166469",
 }
-EASTMONEY_ETF_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-EASTMONEY_ETF_MARKETS = {"511260": 1, "511220": 1}
 FUNCTION_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 BLOCKED_FUNCTIONS = {"set_token", "set_proxy", "set_config", "clear_cache"}
 
@@ -314,122 +303,32 @@ def normalize_rows(
     return rows
 
 
-def fetch_eastmoney_etf(
-    symbol: str,
-    start_date: str,
-    end_date: str,
-    adjust: str,
-) -> list[dict[str, Any]]:
-    adjust_codes = {"": "0", "qfq": "1", "hfq": "2"}
-    if adjust not in adjust_codes:
-        raise HTTPException(status_code=422, detail="adjust must be one of: , qfq, hfq")
-    response = requests.get(
-        EASTMONEY_ETF_KLINE_URL,
-        params={
-            "secid": f"{EASTMONEY_ETF_MARKETS[symbol]}.{symbol}",
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57",
-            "ut": "7eea3edcaed734bea9cbfc24409ed989",
-            "klt": "101",
-            "fqt": adjust_codes[adjust],
-            "beg": start_date,
-            "end": end_date,
-        },
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=30,
-    )
-    response.raise_for_status()
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Eastmoney returned invalid ETF JSON") from exc
-    data = payload.get("data") if isinstance(payload, Mapping) else None
-    klines = data.get("klines") if isinstance(data, Mapping) else None
-    if not klines:
-        return []
-
-    rows: list[dict[str, Any]] = []
-    for item in klines:
-        if not isinstance(item, str):
-            raise HTTPException(status_code=502, detail="Eastmoney ETF K-line row is invalid")
-        fields = item.split(",")
-        if len(fields) < 7:
-            raise HTTPException(status_code=502, detail="Eastmoney ETF K-line fields are incomplete")
-        row_date = json_date(fields[0])
-        row_date_key = row_date.replace("-", "")
-        if row_date_key < start_date or row_date_key > end_date:
-            continue
-        volume = json_number(fields[5], "volume")
-        if volume is not None:
-            volume = int(round(volume * 100))
-        rows.append(
-            {
-                "date": row_date,
-                "open": json_number(fields[1], "open"),
-                "high": json_number(fields[3], "high"),
-                "low": json_number(fields[4], "low"),
-                "close": json_number(fields[2], "close"),
-                "volume": volume,
-                "total_turnover": json_number(fields[6], "total_turnover"),
-            }
-        )
-    return sorted(rows, key=lambda row: row["date"])
-
-
 async def fetch_normalized_etf(
     symbol: str,
     start_date: str,
     end_date: str,
     adjust: str,
 ) -> tuple[str, list[dict[str, Any]]]:
-    if symbol in EASTMONEY_ETF_MARKETS:
-        try:
-            return (
-                "eastmoney.stock_kline",
-                await run_in_threadpool(
-                    fetch_eastmoney_etf,
-                    symbol,
-                    start_date,
-                    end_date,
-                    adjust,
-                ),
-            )
-        except requests.exceptions.RequestException:
-            pass
-    try:
-        frame = await call_akshare(
-            ak.fund_etf_hist_em,
-            {
-                "symbol": symbol,
-                "period": "daily",
-                "start_date": start_date,
-                "end_date": end_date,
-                "adjust": adjust,
-            },
-        )
-        return (
-            "akshare.fund_etf_hist_em",
-            normalize_rows(
-                frame,
-                volume_in_lots=True,
-                volume_round_to=100,
-                start_date=start_date,
-                end_date=end_date,
-            ),
-        )
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-        sina_symbol = SINA_ETF_SYMBOLS[symbol]
-        frame = await call_akshare(ak.fund_etf_hist_sina, {"symbol": sina_symbol})
-        return (
-            "akshare.fund_etf_hist_sina",
-            normalize_rows(
-                frame,
-                volume_in_lots=False,
-                volume_round_to=100,
-                start_date=start_date,
-                end_date=end_date,
-            ),
-        )
+    frame = await call_akshare(
+        ak.fund_etf_hist_em,
+        {
+            "symbol": symbol,
+            "period": "daily",
+            "start_date": start_date,
+            "end_date": end_date,
+            "adjust": adjust,
+        },
+    )
+    return (
+        "akshare.fund_etf_hist_em",
+        normalize_rows(
+            frame,
+            volume_in_lots=True,
+            volume_round_to=100,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+    )
 
 
 def fetch_eastmoney_china_yield_curve(

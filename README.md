@@ -99,9 +99,9 @@ The original normalized ETF route remains available for compatibility. It
 supports the five original ETFs plus the production domestic-bond ETFs
 `511260` (ten-year Treasury ETF) and `511220` (city-investment bond ETF):
 
-For `511260` and `511220`, the route first calls Eastmoney's stock K-line API
-directly and falls back to AKShare's Sina adapter only when the Eastmoney
-request cannot be completed.
+The route uses only AKShare `fund_etf_hist_em` (the Eastmoney ETF history
+endpoint). If Eastmoney is unavailable or returns incomplete fields, the route
+returns an error; it does not switch to another data source.
 
 ```text
 GET /api/health
@@ -146,10 +146,7 @@ The ETF route returns the fields required by the current Turso daily-K table:
 ```
 
 For the normalized ETF route, AKShare Eastmoney volume is converted from lots
-to shares to match the existing Turso table. If Eastmoney is unavailable, the
-route falls back to AKShare `fund_etf_hist_sina`; Sina volume is already in
-shares, is rounded to the same 100-share precision, and its historical
-`amount` is used as `total_turnover`.
+to shares to match the existing Turso table.
 
 ## Local test
 
