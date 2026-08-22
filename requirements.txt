@@ -1,0 +1,3 @@
+akshare==1.18.82
+fastapi==0.135.2
+uvicorn==0.42.0
