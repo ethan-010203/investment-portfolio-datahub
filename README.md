@@ -1,10 +1,10 @@
 # Investment Portfolio DataHub
 
 Vercel + FastAPI relay service for upstream sources that are better handled in
-Python. It provides a derived TQSDK soybean-meal endpoint and parses USDA WASDE
-workbooks. The derived soybean endpoint returns the unified formal soybean
-futures input values; it
-does not write Turso or produce portfolio weights.
+Python. It provides a concrete-contract TQSDK futures endpoint and parses USDA
+WASDE workbooks. The futures endpoint returns both the minimal contract source
+rows and the unified formal soybean inputs; it does not write Turso or produce
+portfolio weights.
 
 ## Production routes
 
@@ -21,21 +21,25 @@ GET /api/health
 The health response lists the active relay sources: `tqsdk-relay`,
 `usda-excel-relay`, and `csindex-indicator-relay`.
 
-### Derived TQSDK soybean-meal rows
+### TQSDK futures source and derived rows
 
 ```text
 POST /api/tq/soymeal/derived
 ```
 
 This route uses the temporary TQSDK test account in `api/tq_derived.py`. It
-requests the soybean meal, rapeseed meal, soybean oil, corn, and egg main
-continuous series plus their concrete contract legs. It returns one row for
-the unified Turso table: M88/M888 prices, M888 volume and open interest, the
-RM888/Y888/C888/JD888 adjusted closes, and the two soybean roll yields. M888
-and the four auxiliary 888 series are calculated locally from the previous
-stored row and the current contract mappings. The caller provides those
-previous values as `seed`; the route does not write Turso. It uses the same
-outer DataHub token check as the other protected routes.
+requests only concrete M/RM/Y/C/JD contracts; TQ automatic-main labels are not
+used as formal inputs. All five mappings use RiceQuant-compatible `rule=0`:
+another contract must close above 1.1 times the current open interest, the
+switch takes effect on the next trading day, and a previous main cannot return.
+The 888 prices use `pre`/`prev_close_ratio` adjustment. Before 2020, volume and
+open interest are normalized by the frozen two-times convention.
+
+The caller provides each product's stored main contract and previously used
+contracts. The response contains concrete source rows, five derived series,
+roll events with idempotent prefix scale factors, and M term-structure values.
+Supabase writes those values to Turso in one transaction. The route itself does
+not access Turso and uses the same outer token check as every protected route.
 
 ### USDA WASDE parser relay
 

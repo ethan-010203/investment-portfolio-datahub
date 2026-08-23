@@ -33,9 +33,9 @@ DIVIDEND_YIELD_SEMAPHORE = asyncio.Semaphore(2)
 
 app = FastAPI(
     title="Investment Portfolio DataHub",
-    version="0.3.0",
+    version="0.4.0",
     description=(
-        "Vercel relay for derived TQSDK soybean-meal, USDA WASDE, and "
+        "Vercel relay for concrete-contract TQSDK futures, USDA WASDE, and "
         "CSIndex data used by the investment portfolio pipeline."
     ),
 )
