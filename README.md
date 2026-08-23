@@ -2,8 +2,9 @@
 
 Vercel + FastAPI relay service for upstream sources that are better handled in
 Python. It provides a derived TQSDK soybean-meal endpoint and parses USDA WASDE
-workbooks. The soybean production endpoint returns final M88/M888 rows; it does
-not write Turso or produce portfolio weights.
+workbooks. The derived soybean endpoint returns the unified formal soybean
+futures input values; it
+does not write Turso or produce portfolio weights.
 
 ## Production routes
 
@@ -27,10 +28,14 @@ POST /api/tq/soymeal/derived
 ```
 
 This route uses the temporary TQSDK test account in `api/tq_derived.py`. It
-requests only the main continuous series and concrete main contracts needed for
-the requested range, then returns M88/M888, roll, and adjustment fields. The
-caller provides the previous stored row as `seed`; the route does not write
-Turso. It uses the same outer DataHub token check as the other protected routes.
+requests the soybean meal, rapeseed meal, soybean oil, corn, and egg main
+continuous series plus their concrete contract legs. It returns one row for
+the unified Turso table: M88/M888 prices, M888 volume and open interest, the
+RM888/Y888/C888/JD888 adjusted closes, and the two soybean roll yields. M888
+and the four auxiliary 888 series are calculated locally from the previous
+stored row and the current contract mappings. The caller provides those
+previous values as `seed`; the route does not write Turso. It uses the same
+outer DataHub token check as the other protected routes.
 
 ### USDA WASDE parser relay
 
