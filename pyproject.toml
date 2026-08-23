@@ -1,0 +1,19 @@
+[project]
+name = "investment-portfolio-datahub"
+version = "0.1.0"
+dependencies = [
+  "fastapi==0.135.2",
+  "requests==2.32.5",
+  "uvicorn==0.42.0",
+  "xlrd==2.0.1",
+  "tqsdk==3.10.2",
+  "scipy==0.0.0",
+  "tqsdk-ctpse==0.0.0",
+  "tqsdk-sm==0.0.0",
+]
+requires-python = ">=3.12,<3.13"
+
+[tool.uv.sources]
+scipy = { path = "vendor/scipy" }
+tqsdk-ctpse = { path = "vendor/tqsdk-ctpse" }
+tqsdk-sm = { path = "vendor/tqsdk-sm" }

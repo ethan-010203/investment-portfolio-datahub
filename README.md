@@ -1,9 +1,9 @@
 # Investment Portfolio DataHub
 
 Vercel + FastAPI relay service for upstream sources that are better handled in
-Python. It relays raw TQSDK soybean-meal data and parses USDA WASDE workbooks.
-It does not select contracts, calculate M88/M888, calculate roll yield, or
-produce portfolio weights.
+Python. It provides a direct TQSDK soybean-meal endpoint and parses USDA WASDE
+workbooks. The soybean production endpoint returns final M88/M888 rows; it does
+not write Turso or produce portfolio weights.
 
 ## Production routes
 
@@ -29,6 +29,18 @@ The request is forwarded to the Python TQSDK service configured by
 `TQSDK_UPSTREAM_URL`. The relay validates dates, requested datasets, and size
 limits, then returns the upstream response without calculating factors. Each
 request has a 55-second per-attempt timeout and a 90-second total timeout.
+
+### Derived TQSDK soybean-meal rows
+
+```text
+POST /api/tq/soymeal/derived
+```
+
+This route uses the temporary TQSDK test account in `api/tq_derived.py`. It
+requests only the main continuous series and concrete main contracts needed for
+the requested range, then returns M88/M888, roll, and adjustment fields. The
+caller provides the previous stored row as `seed`; the route does not write
+Turso. It uses the same single DataHub token check as the other protected routes.
 
 ### USDA WASDE parser relay
 

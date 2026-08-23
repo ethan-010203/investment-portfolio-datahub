@@ -2,7 +2,8 @@
   "regions": ["sin1"],
   "functions": {
     "api/index.py": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "excludeFiles": "**/{scipy,scipy.libs,tqsdk_sm,tqsdk_ctpse}/**"
     }
   }
 }

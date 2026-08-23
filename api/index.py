@@ -6,6 +6,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.security import require_request_auth
+from api.tq_derived import (
+    TqDerivedError,
+    fetch_tq_derived,
+    parse_tq_derived_request,
+)
 from api.tq_proxy import (
     TqConfigurationError,
     TqUpstreamError,
@@ -67,6 +72,36 @@ async def tq_soymeal_raw(request: Request) -> dict[str, Any]:
             status_code=502,
             detail=f"TQ request failed: {type(exc).__name__}",
         ) from exc
+
+
+@app.post("/tq/soymeal/derived", include_in_schema=True)
+@app.post("/api/tq/soymeal/derived", include_in_schema=False)
+async def tq_soymeal_derived(request: Request) -> dict[str, Any]:
+    require_request_auth(request)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON") from exc
+
+    parameters = parse_tq_derived_request(payload)
+    try:
+        result = await fetch_tq_derived(parameters)
+    except TqDerivedError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"TQ derived request failed: {type(exc).__name__}",
+        ) from exc
+    return {
+        "ok": True,
+        "source": "tqsdk",
+        "start_date": parameters["start_date"].isoformat(),
+        "end_date": parameters["end_date"].isoformat(),
+        **result,
+    }
 
 
 def _parse_wasde_request(payload: Any) -> tuple[str, str, int]:
