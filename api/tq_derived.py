@@ -283,7 +283,6 @@ def _build_rows(
                 "new_contract_current_close": new_current,
                 "roll_return": roll_return,
                 "adjustment_factor": m888_close / current_close,
-                "data_source": "tqsdk",
             }
         )
         previous_date = current_date
