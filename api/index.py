@@ -1,22 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from api.security import require_request_auth
+from api.csindex import (
+    CsIndexHistoryError,
+    fetch_csindex_history,
+    parse_history_request,
+)
 from api.tq_derived import (
     TqDerivedError,
     fetch_tq_derived,
     parse_tq_derived_request,
-)
-from api.tq_proxy import (
-    TqConfigurationError,
-    TqUpstreamError,
-    fetch_tq_raw,
-    parse_tq_request,
 )
 from api.wasde_parser import (
     MAX_RELEASES_PER_CALL,
@@ -26,10 +27,17 @@ from api.wasde_parser import (
 )
 
 
+WASDE_SEMAPHORE = asyncio.Semaphore(2)
+DIVIDEND_YIELD_SEMAPHORE = asyncio.Semaphore(2)
+
+
 app = FastAPI(
     title="Investment Portfolio DataHub",
     version="0.3.0",
-    description="Minimal Vercel relay for TQSDK soybean-meal data.",
+    description=(
+        "Vercel relay for derived TQSDK soybean-meal, USDA WASDE, and "
+        "CSIndex data used by the investment portfolio pipeline."
+    ),
 )
 app.add_middleware(
     CORSMiddleware,
@@ -40,14 +48,14 @@ app.add_middleware(
 
 PROTECTED_PATHS = frozenset(
     {
-        "/tq/soymeal/raw",
-        "/api/tq/soymeal/raw",
         "/tq/soymeal/derived",
         "/api/tq/soymeal/derived",
         "/usda",
         "/api/usda",
         "/csindex",
         "/api/csindex",
+        "/csindex/history",
+        "/api/csindex/history",
     }
 )
 
@@ -72,32 +80,13 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "investment-portfolio-datahub",
         "version": app.version,
-        "sources": ["tqsdk-relay", "usda-excel-relay", "csindex-indicator-relay"],
+        "sources": [
+            "tqsdk-relay",
+            "usda-excel-relay",
+            "csindex-history-relay",
+            "csindex-indicator-relay",
+        ],
     }
-
-
-@app.post("/tq/soymeal/raw", include_in_schema=True)
-@app.post("/api/tq/soymeal/raw", include_in_schema=False)
-async def tq_soymeal_raw(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Request body must be valid JSON") from exc
-
-    parameters = parse_tq_request(payload)
-    try:
-        return await fetch_tq_raw(parameters)
-    except TqConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except TqUpstreamError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"TQ request failed: {type(exc).__name__}",
-        ) from exc
 
 
 @app.post("/tq/soymeal/derived", include_in_schema=True)
@@ -156,7 +145,13 @@ async def usda_wasde_rows(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Request body must be valid JSON") from exc
     start_date, end_date, max_rows = _parse_wasde_request(payload)
     try:
-        rows, has_more, discovered_rows = fetch_wasde_rows(start_date, end_date, max_rows)
+        async with WASDE_SEMAPHORE:
+            rows, has_more, discovered_rows = await run_in_threadpool(
+                fetch_wasde_rows,
+                start_date,
+                end_date,
+                max_rows,
+            )
     except WasdeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
@@ -188,7 +183,12 @@ async def csindex_dividend_yield(request: Request) -> dict[str, Any]:
     if not isinstance(start_date, str) or not isinstance(end_date, str):
         raise HTTPException(status_code=422, detail="start_date and end_date are required")
     try:
-        rows = fetch_dividend_yield(start_date, end_date)
+        async with DIVIDEND_YIELD_SEMAPHORE:
+            rows = await run_in_threadpool(
+                fetch_dividend_yield,
+                start_date,
+                end_date,
+            )
     except WasdeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
@@ -198,6 +198,33 @@ async def csindex_dividend_yield(request: Request) -> dict[str, Any]:
         "source": "csindex",
         "start_date": start_date,
         "end_date": end_date,
+        "returned_rows": len(rows),
+        "rows": rows,
+    }
+
+
+@app.post("/csindex/history", include_in_schema=True)
+@app.post("/api/csindex/history", include_in_schema=False)
+async def csindex_history(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON") from exc
+    parameters = parse_history_request(payload)
+    try:
+        rows = await fetch_csindex_history(parameters)
+    except CsIndexHistoryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"CSIndex history failed: {type(exc).__name__}") from exc
+    return {
+        "ok": True,
+        "source": "csindex-history",
+        "index_code": parameters["index_code"],
+        "start_date": parameters["start_date"].isoformat(),
+        "end_date": parameters["end_date"].isoformat(),
         "returned_rows": len(rows),
         "rows": rows,
     }
