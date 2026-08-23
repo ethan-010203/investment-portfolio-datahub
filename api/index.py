@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.security import require_request_auth
 from api.tq_derived import (
@@ -37,6 +38,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PROTECTED_PATHS = frozenset(
+    {
+        "/tq/soymeal/raw",
+        "/api/tq/soymeal/raw",
+        "/tq/soymeal/derived",
+        "/api/tq/soymeal/derived",
+        "/usda",
+        "/api/usda",
+        "/csindex",
+        "/api/csindex",
+    }
+)
+
+
+@app.middleware("http")
+async def authenticate_datahub_request(request: Request, call_next):
+    if request.method != "OPTIONS" and request.url.path in PROTECTED_PATHS:
+        try:
+            require_request_auth(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+            )
+    return await call_next(request)
+
 
 @app.get("/health", include_in_schema=True)
 @app.get("/api/health", include_in_schema=False)
@@ -52,7 +79,6 @@ def health() -> dict[str, Any]:
 @app.post("/tq/soymeal/raw", include_in_schema=True)
 @app.post("/api/tq/soymeal/raw", include_in_schema=False)
 async def tq_soymeal_raw(request: Request) -> dict[str, Any]:
-    require_request_auth(request)
     try:
         payload = await request.json()
     except ValueError as exc:
@@ -77,7 +103,6 @@ async def tq_soymeal_raw(request: Request) -> dict[str, Any]:
 @app.post("/tq/soymeal/derived", include_in_schema=True)
 @app.post("/api/tq/soymeal/derived", include_in_schema=False)
 async def tq_soymeal_derived(request: Request) -> dict[str, Any]:
-    require_request_auth(request)
     try:
         payload = await request.json()
     except ValueError as exc:
@@ -125,7 +150,6 @@ def _parse_wasde_request(payload: Any) -> tuple[str, str, int]:
 @app.post("/usda", include_in_schema=True)
 @app.post("/api/usda", include_in_schema=False)
 async def usda_wasde_rows(request: Request) -> dict[str, Any]:
-    require_request_auth(request)
     try:
         payload = await request.json()
     except ValueError as exc:
@@ -153,7 +177,6 @@ async def usda_wasde_rows(request: Request) -> dict[str, Any]:
 @app.post("/csindex", include_in_schema=True)
 @app.post("/api/csindex", include_in_schema=False)
 async def csindex_dividend_yield(request: Request) -> dict[str, Any]:
-    require_request_auth(request)
     try:
         payload = await request.json()
     except ValueError as exc:

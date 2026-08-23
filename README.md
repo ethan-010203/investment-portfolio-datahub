@@ -7,8 +7,9 @@ not write Turso or produce portfolio weights.
 
 ## Production routes
 
-All routes require the shared token from `api/security.py` in either
-`x-datahub-token` or `Authorization: Bearer`.
+Protected routes require the shared token from `api/security.py` in the
+`x-datahub-token` header. Authentication runs once in the outer FastAPI
+middleware before the request reaches a route handler.
 
 ### Health
 
@@ -40,7 +41,7 @@ This route uses the temporary TQSDK test account in `api/tq_derived.py`. It
 requests only the main continuous series and concrete main contracts needed for
 the requested range, then returns M88/M888, roll, and adjustment fields. The
 caller provides the previous stored row as `seed`; the route does not write
-Turso. It uses the same single DataHub token check as the other protected routes.
+Turso. It uses the same outer DataHub token check as the other protected routes.
 
 ### USDA WASDE parser relay
 
