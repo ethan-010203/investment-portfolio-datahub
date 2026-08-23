@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime
 import os
+import time
 from typing import Any
 
 import requests
@@ -28,6 +29,7 @@ def positive_env_int(name: str, default: int) -> int:
 
 TQ_RELAY_RETRY_ATTEMPTS = positive_env_int("TQ_RELAY_RETRY_ATTEMPTS", 2)
 TQ_RELAY_TIMEOUT_SECONDS = positive_env_int("TQ_RELAY_TIMEOUT_SECONDS", 55)
+TQ_RELAY_TOTAL_TIMEOUT_SECONDS = positive_env_int("TQ_RELAY_TOTAL_TIMEOUT_SECONDS", 90)
 TQ_RELAY_SEMAPHORE = asyncio.Semaphore(2)
 
 
@@ -117,7 +119,7 @@ def _upstream_payload(parameters: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _relay_once(payload: dict[str, Any]) -> dict[str, Any]:
+def _relay_once(payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
     upstream_url = os.getenv("TQSDK_UPSTREAM_URL", "").strip()
     if not upstream_url:
         raise TqConfigurationError("TQSDK_UPSTREAM_URL is not configured")
@@ -130,7 +132,7 @@ def _relay_once(payload: dict[str, Any]) -> dict[str, Any]:
             upstream_url,
             json=payload,
             headers=headers,
-            timeout=TQ_RELAY_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         raise TqUpstreamError(type(exc).__name__) from exc
@@ -154,16 +156,27 @@ def _relay_once(payload: dict[str, Any]) -> dict[str, Any]:
 async def fetch_tq_raw(parameters: dict[str, Any]) -> dict[str, Any]:
     payload = _upstream_payload(parameters)
     async with TQ_RELAY_SEMAPHORE:
+        deadline = time.monotonic() + TQ_RELAY_TOTAL_TIMEOUT_SECONDS
         last_error: Exception | None = None
         for attempt in range(TQ_RELAY_RETRY_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                return await run_in_threadpool(_relay_once, payload)
+                return await run_in_threadpool(
+                    _relay_once,
+                    payload,
+                    min(TQ_RELAY_TIMEOUT_SECONDS, remaining),
+                )
             except (TqConfigurationError, HTTPException):
                 raise
             except TqUpstreamError as exc:
                 last_error = exc
                 if attempt + 1 < TQ_RELAY_RETRY_ATTEMPTS:
-                    await asyncio.sleep(min(2.0, 0.5 * (2**attempt)))
+                    remaining = deadline - time.monotonic()
+                    await asyncio.sleep(min(2.0, 0.5 * (2**attempt), max(0.0, remaining)))
+        if last_error is None:
+            raise TqUpstreamError("TQ relay total timeout exceeded")
         raise TqUpstreamError(
             f"TQ upstream request failed: {type(last_error).__name__}"
         ) from last_error

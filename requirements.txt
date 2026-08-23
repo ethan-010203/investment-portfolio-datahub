@@ -1,6 +1,4 @@
 fastapi==0.135.2
-pandas==2.2.2
-pytdx==1.72
 requests==2.32.5
-xlrd==2.0.2
 uvicorn==0.42.0
+xlrd==2.0.1

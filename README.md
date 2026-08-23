@@ -1,62 +1,23 @@
 # Investment Portfolio DataHub
 
-Vercel + FastAPI transport service for data sources that Supabase Edge Functions
-cannot call directly. It relays source data only and does not calculate factors,
-select soybean-meal contracts, or produce portfolio weights.
+Vercel + FastAPI relay service for upstream sources that are better handled in
+Python. It relays raw TQSDK soybean-meal data and parses USDA WASDE workbooks.
+It does not select contracts, calculate M88/M888, calculate roll yield, or
+produce portfolio weights.
 
 ## Production routes
 
-All data routes require the shared token from `api/security.py` in either
+All routes require the shared token from `api/security.py` in either
 `x-datahub-token` or `Authorization: Bearer`.
 
-### ETF daily bars
+### Health
 
 ```text
-GET /api/etf/{symbol}?start_date=20260801&end_date=20260821&adjust=
+GET /api/health
 ```
 
-The route supports `512890`, `513100`, `513500`, `518880`, and `159985`. It
-reads unadjusted daily OHLCV from TongdaXin through `pytdx`.
-Multiple TongdaXin servers provide transport redundancy; there is no fallback
-to another market-data source.
-
-The response fields match the Turso daily-K tables:
-
-```json
-{
-  "date": "2026-08-21",
-  "open": 1.182,
-  "high": 1.184,
-  "low": 1.174,
-  "close": 1.176,
-  "volume": 513705800,
-  "total_turnover": 604722688
-}
-```
-
-TongdaXin volume is reported in lots and converted to shares before returning.
-History is paged backward in blocks of 800 rows and filtered to the requested
-date range. Supabase requests all five ETFs as one batch so one TCP connection
-is reused for the complete update.
-
-### H30269 dividend yield
-
-```text
-GET /api/index/H30269/dividend-yield?start_date=20260801&end_date=20260821
-```
-
-This route downloads the official CSI Index indicator workbook directly. It
-returns only `date` and the free-float market-cap weighted dividend yield
-(`D/P2`) as a decimal.
-
-### USDA WASDE
-
-```text
-GET /api/usda/wasde?start_date=20260801&end_date=20260821
-```
-
-The route downloads official USDA ESMIS workbooks and normalizes only the
-soybean demand fields required by the strategy.
+The health response lists the active relay sources: `tqsdk-relay`,
+`usda-excel-relay`, and `csindex-indicator-relay`.
 
 ### Raw TQSDK soybean-meal relay
 
@@ -65,14 +26,37 @@ POST /api/tq/soymeal/raw
 ```
 
 The request is forwarded to the Python TQSDK service configured by
-`TQSDK_UPSTREAM_URL`. The route does not choose main/sub-main contracts,
-calculate M88/M888, splice prices, or calculate roll yield.
+`TQSDK_UPSTREAM_URL`. The relay validates dates, requested datasets, and size
+limits, then returns the upstream response without calculating factors. Each
+request has a 55-second per-attempt timeout and a 90-second total timeout.
+
+### USDA WASDE parser relay
+
+```text
+POST /api/usda
+```
+
+The request accepts `start_date`, `end_date`, and optional `max_rows` (1-5).
+It downloads only the oldest missing USDA releases in the requested range and
+returns the six fields required by the Turso `L3_USDA WASDE` table. The relay
+does not write Turso and does not return raw workbooks.
+
+### CSIndex dividend indicator relay
+
+```text
+POST /api/csindex
+```
+
+This endpoint parses the official H30269 indicator workbook and returns only
+the date and real dividend-yield value required by Turso.
+The relay retries each workbook download once before returning an upstream
+error.
 
 ## Data fetched directly by Supabase
 
-`003376` accumulated NAV is fetched directly from Tencent Finance. The China
-10-year government-bond yield and credit curves are fetched directly from
-ChinaBond. They do not pass through this Vercel service.
+ETF daily bars use Tencent Finance directly from Supabase. Supabase also calls
+FRED, CSI Index daily closes, Tencent Finance, and ChinaBond directly. USDA and
+CSIndex indicator workbook download and parsing pass through the Python relay.
 
 ## Local test
 
@@ -83,4 +67,4 @@ pip install -r requirements.txt
 uvicorn api.index:app --reload --port 8000
 ```
 
-Then request `/api/health` or one of the authenticated production routes.
+Then request `/api/health` or the authenticated TQ relay route.
