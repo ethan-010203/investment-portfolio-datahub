@@ -16,8 +16,8 @@ from api.csindex import (
 from api.security import require_request_auth
 from api.tq_derived import (
     TqDerivedError,
-    fetch_tq_derived,
-    parse_tq_derived_request,
+    fetch_tq_product,
+    parse_tq_product_request,
 )
 from api.wasde_parser import (
     MAX_RELEASES_PER_CALL,
@@ -96,9 +96,9 @@ async def tq_soymeal_derived(request: Request) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Request body must be valid JSON") from exc
 
-    parameters = parse_tq_derived_request(payload)
+    parameters = parse_tq_product_request(payload)
     try:
-        result = await fetch_tq_derived(parameters)
+        result = await fetch_tq_product(parameters)
     except TqDerivedError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except HTTPException:
@@ -111,6 +111,7 @@ async def tq_soymeal_derived(request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "source": "tqsdk",
+        "product": parameters["product"],
         "start_date": parameters["start_date"].isoformat(),
         "end_date": parameters["end_date"].isoformat(),
         **result,

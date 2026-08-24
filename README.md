@@ -35,11 +35,13 @@ switch takes effect on the next trading day, and a previous main cannot return.
 The 888 prices use `pre`/`prev_close_ratio` adjustment. Before 2020, volume and
 open interest are normalized by the frozen two-times convention.
 
-The caller provides each product's stored main contract and previously used
-contracts. The response contains concrete source rows, five derived series,
-roll events with idempotent prefix scale factors, and M term-structure values.
-Supabase writes those values to Turso in one transaction. The route itself does
-not access Turso and uses the same outer token check as every protected route.
+Each request contains exactly one of `M`, `RM`, `Y`, `C`, or `JD`, together
+with that product's stored main contract and previously used contracts. The
+response contains only that product's concrete rows, derived series, and roll
+events; `M` additionally returns the two term-structure values. Supabase calls
+the products serially and commits each successful product independently. The
+route itself does not access Turso and uses the same outer token check as every
+protected route.
 
 ### USDA WASDE parser relay
 

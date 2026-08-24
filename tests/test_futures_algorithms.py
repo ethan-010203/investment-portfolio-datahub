@@ -10,7 +10,7 @@ from api.continuous_adjust import build_pre_adjusted_series
 from api.dominant_rule0 import build_rule0_mapping
 from api.quantity_normalizer import normalize_quantity
 from api.soymeal_roll_yield import build_soymeal_roll_yields
-from api.tq_derived import parse_tq_derived_request
+from api.tq_derived import parse_tq_product_request
 
 
 def bars() -> pd.DataFrame:
@@ -78,13 +78,35 @@ def test_quantity_cutover_is_explicit():
     assert normalize_quantity("2020-01-01", 12) == 12.0
 
 
-def test_incremental_request_requires_all_product_states():
+def test_incremental_request_requires_one_valid_product_state():
     with pytest.raises(HTTPException) as caught:
-        parse_tq_derived_request(
+        parse_tq_product_request(
             {
                 "start_date": "2026-08-01",
                 "end_date": "2026-08-02",
-                "states": {},
+                "product": "M",
+                "state": {},
             }
         )
     assert caught.value.status_code == 422
+
+
+def test_incremental_request_parses_one_product_only():
+    result = parse_tq_product_request(
+        {
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-02",
+            "product": "RM",
+            "state": {
+                "trade_date": "2026-07-31",
+                "main_contract_code": "CZCE.RM609",
+                "seen_contracts": ["CZCE.RM605", "CZCE.RM609"],
+            },
+        }
+    )
+    assert result["product"] == "RM"
+    assert set(result["state"]) == {
+        "trade_date",
+        "main_contract_code",
+        "seen_contracts",
+    }

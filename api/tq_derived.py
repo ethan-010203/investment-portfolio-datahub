@@ -1,10 +1,12 @@
-"""Fetch concrete TQSDK contracts and derive the five formal futures series."""
+"""按单个品种获取 TQSDK 具体合约并生成正式连续序列。"""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -22,7 +24,8 @@ TQ_USERNAME = "18064423114"
 TQ_PASSWORD = "ctk2000121"
 TQ_DAILY_SECONDS = 86_400
 TQ_COMPLETE_UNIVERSE_START = date(2020, 9, 15)
-TQ_DIRECT_SEMAPHORE = asyncio.Semaphore(2)
+TQ_DIRECT_SEMAPHORE = asyncio.Semaphore(1)
+LOGGER = logging.getLogger("datahub.tq")
 
 PRODUCTS = {
     "M": {"exchange": "DCE", "product_id": "m"},
@@ -56,24 +59,24 @@ def _parse_date(value: Any, field_name: str) -> date:
 
 def _parse_state(value: Any, product: str, start: date) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise HTTPException(status_code=422, detail=f"states.{product} is required")
-    trade_date = _parse_date(value.get("trade_date"), f"states.{product}.trade_date")
+        raise HTTPException(status_code=422, detail="state is required")
+    trade_date = _parse_date(value.get("trade_date"), "state.trade_date")
     if trade_date >= start:
         raise HTTPException(
             status_code=422,
-            detail=f"states.{product}.trade_date must be before start_date",
+            detail="state.trade_date must be before start_date",
         )
     main = value.get("main_contract_code")
     if not isinstance(main, str) or not main.strip():
         raise HTTPException(
             status_code=422,
-            detail=f"states.{product}.main_contract_code is required",
+            detail="state.main_contract_code is required",
         )
     seen = value.get("seen_contracts")
     if not isinstance(seen, list) or any(not isinstance(item, str) or not item.strip() for item in seen):
         raise HTTPException(
             status_code=422,
-            detail=f"states.{product}.seen_contracts must be a string array",
+            detail="state.seen_contracts must be a string array",
         )
     normalized_seen = list(dict.fromkeys(item.strip() for item in seen))
     if main.strip() not in normalized_seen:
@@ -85,7 +88,7 @@ def _parse_state(value: Any, product: str, start: date) -> dict[str, Any]:
     }
 
 
-def parse_tq_derived_request(payload: Any) -> dict[str, Any]:
+def parse_tq_product_request(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="POST body must be a JSON object")
     start = _parse_date(payload.get("start_date"), "start_date")
@@ -99,16 +102,17 @@ def parse_tq_derived_request(payload: Any) -> dict[str, Any]:
             status_code=422,
             detail=f"incremental TQ data starts at {TQ_COMPLETE_UNIVERSE_START.isoformat()}",
         )
-    states = payload.get("states")
-    if not isinstance(states, dict):
-        raise HTTPException(status_code=422, detail="states is required")
+    product = payload.get("product")
+    if not isinstance(product, str) or product not in PRODUCTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"product must be one of {list(PRODUCTS)}",
+        )
     return {
         "start_date": start,
         "end_date": end,
-        "states": {
-            product: _parse_state(states.get(product), product, start)
-            for product in PRODUCTS
-        },
+        "product": product,
+        "state": _parse_state(payload.get("state"), product, start),
     }
 
 
@@ -287,98 +291,81 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return records
 
 
-def _fetch_raw(parameters: dict[str, Any]) -> dict[str, Any]:
+def _fetch_product(parameters: dict[str, Any]) -> dict[str, Any]:
     try:
         from tqsdk import TqApi, TqAuth
     except ImportError as exc:
         raise TqDerivedError("tqsdk is not installed in the Vercel runtime") from exc
 
     api = None
+    product = str(parameters["product"])
+    started = time.monotonic()
     try:
+        LOGGER.info("TQ 品种请求开始 product=%s", product)
         api = TqApi(auth=TqAuth(TQ_USERNAME, TQ_PASSWORD))
+        LOGGER.info(
+            "TQ 连接建立 product=%s elapsed=%.2fs",
+            product,
+            time.monotonic() - started,
+        )
         start_date = parameters["start_date"]
         end_date = parameters["end_date"]
-        states = parameters["states"]
-        raw_parts: list[pd.DataFrame] = []
-        derived_parts: list[pd.DataFrame] = []
-        roll_parts: list[pd.DataFrame] = []
+        state = parameters["state"]
         carry = pd.DataFrame()
 
-        for product in PRODUCTS:
-            state = states[product]
-            frame, symbols = _load_product_contracts(
+        frame, symbols = _load_product_contracts(
+            api,
+            product,
+            state["trade_date"],
+            end_date,
+        )
+        LOGGER.info(
+            "TQ 合约日线就绪 product=%s contracts=%d elapsed=%.2fs",
+            product,
+            len(symbols),
+            time.monotonic() - started,
+        )
+        if product == "M":
+            settlements = _query_settlements(
                 api,
-                product,
+                symbols,
                 state["trade_date"],
                 end_date,
             )
-            if product == "M":
-                settlements = _query_settlements(
-                    api,
-                    symbols,
-                    state["trade_date"],
-                    end_date,
-                )
-                frame = frame.merge(
-                    settlements,
-                    on=["trade_date", "contract_code"],
-                    how="left",
-                )
-            else:
-                frame["settlement"] = math.nan
-
-            rule = build_rule0_mapping(
-                frame,
-                seed_contract=state["main_contract_code"],
-                seen_contracts=state["seen_contracts"],
+            frame = frame.merge(
+                settlements,
+                on=["trade_date", "contract_code"],
+                how="left",
             )
-            continuous = build_pre_adjusted_series(frame, rule.mapping)
-            output = continuous.rows.loc[
-                (continuous.rows.index >= pd.Timestamp(start_date))
-                & (continuous.rows.index <= pd.Timestamp(end_date))
-            ].reset_index()
-            output["product"] = product
-            derived_parts.append(output)
-
-            events = continuous.roll_events.copy()
-            if not events.empty:
-                events = events.loc[events["effective_date"].ge(pd.Timestamp(start_date))].copy()
-                events["product"] = product
-                roll_parts.append(events)
-
-            if product == "M":
-                carry = build_soymeal_roll_yields(frame, rule.mapping)
-                if not carry.empty:
-                    carry = carry.loc[
-                        (carry.index >= pd.Timestamp(start_date))
-                        & (carry.index <= pd.Timestamp(end_date))
-                    ].reset_index()
-            raw_parts.append(
-                frame.loc[
-                    frame["trade_date"].ge(pd.Timestamp(start_date)),
-                    [
-                        "trade_date",
-                        "product",
-                        "contract_code",
-                        "expiry_date",
-                        "close",
-                        "settlement",
-                        "volume",
-                        "open_interest",
-                    ],
-                ]
+            LOGGER.info(
+                "TQ 结算价就绪 product=%s rows=%d elapsed=%.2fs",
+                product,
+                len(settlements),
+                time.monotonic() - started,
             )
+        else:
+            frame["settlement"] = math.nan
 
-        raw = pd.concat(raw_parts, ignore_index=True).sort_values(
-            ["trade_date", "product", "contract_code"]
+        rule = build_rule0_mapping(
+            frame,
+            seed_contract=state["main_contract_code"],
+            seen_contracts=state["seen_contracts"],
         )
-        derived = pd.concat(derived_parts, ignore_index=True).sort_values(
-            ["trade_date", "product"]
-        )
-        rolls = (
-            pd.concat(roll_parts, ignore_index=True).sort_values(["effective_date", "product"])
-            if roll_parts
-            else pd.DataFrame(
+        continuous = build_pre_adjusted_series(frame, rule.mapping)
+        derived = continuous.rows.loc[
+            (continuous.rows.index >= pd.Timestamp(start_date))
+            & (continuous.rows.index <= pd.Timestamp(end_date))
+        ].reset_index()
+        derived["product"] = product
+
+        rolls = continuous.roll_events.copy()
+        if not rolls.empty:
+            rolls = rolls.loc[
+                rolls["effective_date"].ge(pd.Timestamp(start_date))
+            ].copy()
+            rolls["product"] = product
+        else:
+            rolls = pd.DataFrame(
                 columns=[
                     "effective_date",
                     "from_contract",
@@ -387,12 +374,40 @@ def _fetch_raw(parameters: dict[str, Any]) -> dict[str, Any]:
                     "product",
                 ]
             )
-        )
-        through_dates = derived.groupby("product")["trade_date"].max()
-        through = through_dates.min() if len(through_dates) == len(PRODUCTS) else None
-        if through is not None and not carry.empty:
+
+        if product == "M":
+            carry = build_soymeal_roll_yields(frame, rule.mapping)
+            if not carry.empty:
+                carry = carry.loc[
+                    (carry.index >= pd.Timestamp(start_date))
+                    & (carry.index <= pd.Timestamp(end_date))
+                ].reset_index()
+
+        raw = frame.loc[
+            frame["trade_date"].ge(pd.Timestamp(start_date)),
+            [
+                "trade_date",
+                "product",
+                "contract_code",
+                "expiry_date",
+                "close",
+                "settlement",
+                "volume",
+                "open_interest",
+            ],
+        ].sort_values(["trade_date", "product", "contract_code"])
+        through = derived["trade_date"].max() if not derived.empty else None
+        if product == "M" and through is not None and not carry.empty:
             through = min(pd.Timestamp(through), pd.Timestamp(carry["trade_date"].max()))
+        LOGGER.info(
+            "TQ 品种派生完成 product=%s raw=%d derived=%d elapsed=%.2fs",
+            product,
+            len(raw),
+            len(derived),
+            time.monotonic() - started,
+        )
         return {
+            "product": product,
             "raw_contract_rows": _records(raw),
             "derived_rows": _records(derived),
             "roll_events": _records(rolls),
@@ -405,9 +420,21 @@ def _fetch_raw(parameters: dict[str, Any]) -> dict[str, Any]:
         raise TqDerivedError(f"TqSdk request failed: {type(exc).__name__}: {exc}") from exc
     finally:
         if api is not None:
-            api.close()
+            try:
+                api.close()
+            except Exception as exc:
+                LOGGER.warning(
+                    "TQ 连接关闭失败 product=%s error=%s",
+                    product,
+                    type(exc).__name__,
+                )
+        LOGGER.info(
+            "TQ 品种请求结束 product=%s elapsed=%.2fs",
+            product,
+            time.monotonic() - started,
+        )
 
 
-async def fetch_tq_derived(parameters: dict[str, Any]) -> dict[str, Any]:
+async def fetch_tq_product(parameters: dict[str, Any]) -> dict[str, Any]:
     async with TQ_DIRECT_SEMAPHORE:
-        return await run_in_threadpool(_fetch_raw, parameters)
+        return await run_in_threadpool(_fetch_product, parameters)
