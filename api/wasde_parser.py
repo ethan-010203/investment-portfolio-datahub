@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
 import math
 import re
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urljoin
 
 import requests
 import xlrd
-
 
 WASDE_BASE_URL = (
     "https://esmis.nal.usda.gov/publication/"

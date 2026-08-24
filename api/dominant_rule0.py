@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-import math
 import pandas as pd
-
 
 RULE0_THRESHOLD = 1.1
 REQUIRED_COLUMNS = {

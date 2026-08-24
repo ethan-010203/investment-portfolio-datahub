@@ -5,7 +5,6 @@ import secrets
 from fastapi import HTTPException
 from starlette.requests import Request
 
-
 # Shared by Supabase -> Vercel authentication.
 SHARED_DATAHUB_TOKEN = "4nn17DhFyICn7ra4dyRvT7T1BtGHBgdQ"
 

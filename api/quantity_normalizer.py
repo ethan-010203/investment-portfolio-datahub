@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime
 from typing import Any
 
-import math
 import pandas as pd
-
 
 QUANTITY_CUTOVER = pd.Timestamp("2020-01-01")
 

@@ -17,7 +17,6 @@ from api.dominant_rule0 import DominantRuleError, build_rule0_mapping
 from api.quantity_normalizer import normalize_quantity
 from api.soymeal_roll_yield import RollYieldError, build_soymeal_roll_yields
 
-
 # Temporary free test account requested for this deployment.
 TQ_USERNAME = "18064423114"
 TQ_PASSWORD = "ctk2000121"
@@ -50,7 +49,7 @@ def _parse_date(value: Any, field_name: str) -> date:
     if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
         raise HTTPException(status_code=422, detail=f"{field_name} must use YYYY-MM-DD")
     try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+        return date.fromisoformat(value.strip())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"{field_name} must use YYYY-MM-DD") from exc
 

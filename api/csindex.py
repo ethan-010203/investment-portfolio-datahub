@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
 import math
+from datetime import date
 from typing import Any
 
 import requests
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
-
 
 CSINDEX_HISTORY_URL = "https://www.csindex.com.cn/csindex-home/perf/index-perf"
 CSINDEX_HISTORY_TIMEOUT_SECONDS = 25

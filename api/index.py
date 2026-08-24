@@ -8,12 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from api.security import require_request_auth
 from api.csindex import (
     CsIndexHistoryError,
     fetch_csindex_history,
     parse_history_request,
 )
+from api.security import require_request_auth
 from api.tq_derived import (
     TqDerivedError,
     fetch_tq_derived,
@@ -25,7 +25,6 @@ from api.wasde_parser import (
     fetch_dividend_yield,
     fetch_wasde_rows,
 )
-
 
 WASDE_SEMAPHORE = asyncio.Semaphore(2)
 DIVIDEND_YIELD_SEMAPHORE = asyncio.Semaphore(2)

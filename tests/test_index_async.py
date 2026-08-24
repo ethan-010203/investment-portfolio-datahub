@@ -2,8 +2,9 @@ import asyncio
 import json
 import time
 
-from api import index
 from starlette.requests import Request
+
+from api import index
 
 
 def request_for(payload: dict[str, object], path: str) -> Request:

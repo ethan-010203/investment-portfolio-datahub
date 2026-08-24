@@ -1,6 +1,0 @@
-pyproject.toml
-tqsdk_sm/__init__.py
-tqsdk_sm.egg-info/PKG-INFO
-tqsdk_sm.egg-info/SOURCES.txt
-tqsdk_sm.egg-info/dependency_links.txt
-tqsdk_sm.egg-info/top_level.txt
